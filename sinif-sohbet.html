@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sınıf Sohbet</title>
+<style>
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;font-family:system-ui,sans-serif;background:#0b141a;color:#e9edef}
+#app{height:100%;max-width:600px;margin:auto;display:flex;flex-direction:column;background:#111b21}
+header{background:#202c33;padding:12px 14px;display:flex;align-items:center;gap:10px;min-height:56px}
+header h1{font-size:18px;flex:1}
+button{background:#00a884;color:#fff;border:0;border-radius:8px;padding:10px 14px;font-size:15px}
+button.ghost{background:transparent;font-size:20px;padding:6px 10px}
+input,select{width:100%;padding:12px;margin:6px 0;border-radius:8px;border:0;background:#2a3942;color:#e9edef;font-size:16px}
+.box{padding:20px}
+.tabs{display:flex;gap:8px;margin-bottom:10px}
+.tabs button{flex:1;background:#2a3942}
+.tabs button.on{background:#00a884}
+.err{color:#ff8a80;font-size:14px;min-height:18px;margin:6px 0}
+#list,#msgs{flex:1;overflow-y:auto}
+.room{padding:16px;border-bottom:1px solid #222d34}
+.room small{color:#8696a0;display:block;margin-top:4px}
+#msgs{padding:10px;display:flex;flex-direction:column;gap:6px;background:#0b141a}
+.m{max-width:80%;padding:7px 10px;border-radius:10px;background:#202c33;align-self:flex-start;word-wrap:break-word}
+.m.me{background:#005c4b;align-self:flex-end}
+.m b{display:block;font-size:12px;color:#53bdeb;margin-bottom:2px}
+.m img{max-width:100%;border-radius:8px;display:block;margin:4px 0}
+.m i{display:block;font-size:11px;color:#8696a0;text-align:right;margin-top:2px;font-style:normal}
+#bar{display:flex;gap:6px;padding:8px;background:#202c33;padding-bottom:calc(8px + env(safe-area-inset-bottom,0px))}
+#bar input{margin:0;flex:1}
+.hide{display:none!important}
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- GİRİŞ -->
+<div id="auth" class="box">
+  <h2 style="margin:20px 0">📚 Sınıf Sohbet</h2>
+  <div class="tabs"><button id="tL" class="on">Giriş</button><button id="tR">Kayıt</button></div>
+  <div id="regFields" class="hide">
+    <input id="name" placeholder="Ad Soyad">
+    <select id="role"><option value="ogrenci">Öğrenci</option><option value="ogretmen">Öğretmen</option></select>
+    <input id="tcode" class="hide" placeholder="Öğretmen kodu">
+  </div>
+  <input id="email" type="email" placeholder="E-posta">
+  <input id="pass" type="password" placeholder="Şifre (en az 6 karakter)">
+  <div class="err" id="err"></div>
+  <button id="go" style="width:100%">Giriş yap</button>
+</div>
+
+<!-- ODA LİSTESİ -->
+<div id="home" class="hide" style="flex:1;flex-direction:column;min-height:0">
+  <header><h1>Sohbetler</h1><button id="newRoom" class="ghost hide">＋</button><button id="out" class="ghost">⎋</button></header>
+  <div id="list"></div>
+</div>
+
+<!-- SOHBET -->
+<div id="chat" class="hide" style="flex:1;flex-direction:column;min-height:0">
+  <header><button id="back" class="ghost">←</button><h1 id="rTitle"></h1></header>
+  <div id="msgs"></div>
+  <div id="bar">
+    <button id="pic" class="ghost">📷</button>
+    <input id="txt" placeholder="Mesaj yaz" autocomplete="off">
+    <button id="send">➤</button>
+  </div>
+  <input type="file" id="file" accept="image/*" class="hide">
+</div>
+
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+// ====== AYARLAR: Firebase konsolundan aldığın bilgileri buraya yapıştır ======
+const firebaseConfig = {
+  apiKey: "BURAYA",
+  authDomain: "BURAYA",
+  projectId: "BURAYA",
+  appId: "BURAYA"
+};
+const TEACHER_CODE = "OGRETMEN2026"; // öğretmenlere bu kodu ver, istediğin gibi değiştir
+// ==============================================================================
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth(), db = firebase.firestore();
+const $ = id => document.getElementById(id);
+let me = null, roomId = null, unsub = null, mode = "login";
+
+function show(id){
+  ["auth","home","chat"].forEach(x=>{
+    const e=$(x); e.classList.toggle("hide",x!==id);
+    e.style.display = x===id ? (x==="auth"?"block":"flex") : "none";
+  });
+}
+
+// Sekmeler
+$("tL").onclick=()=>setMode("login"); $("tR").onclick=()=>setMode("reg");
+function setMode(m){
+  mode=m; $("tL").classList.toggle("on",m==="login"); $("tR").classList.toggle("on",m==="reg");
+  $("regFields").classList.toggle("hide",m==="login");
+  $("go").textContent = m==="login"?"Giriş yap":"Kayıt ol"; $("err").textContent="";
+}
+$("role").onchange=()=>$("tcode").classList.toggle("hide",$("role").value!=="ogretmen");
+
+$("go").onclick=async()=>{
+  $("err").textContent="";
+  try{
+    const email=$("email").value.trim(), pass=$("pass").value;
+    if(mode==="login"){ await auth.signInWithEmailAndPassword(email,pass); return; }
+    const name=$("name").value.trim(), role=$("role").value;
+    if(name.length<3) throw {message:"Ad Soyad yaz."};
+    if(role==="ogretmen" && $("tcode").value!==TEACHER_CODE) throw {message:"Öğretmen kodu yanlış."};
+    const c=await auth.createUserWithEmailAndPassword(email,pass);
+    await db.collection("users").doc(c.user.uid).set({name,role});
+  }catch(e){ $("err").textContent=e.message; }
+};
+$("out").onclick=()=>auth.signOut();
+
+auth.onAuthStateChanged(async u=>{
+  if(!u){ me=null; show("auth"); return; }
+  let snap;
+  for(let i=0;i<10;i++){ snap=await db.collection("users").doc(u.uid).get(); if(snap.exists)break; await new Promise(r=>setTimeout(r,400)); }
+  if(!snap||!snap.exists){ await auth.signOut(); return; }
+  me={uid:u.uid,...snap.data()};
+  $("newRoom").classList.toggle("hide",me.role!=="ogretmen");
+  loadRooms(); show("home");
+});
+
+// Odalar
+let roomsUnsub=null;
+function loadRooms(){
+  if(roomsUnsub) roomsUnsub();
+  roomsUnsub=db.collection("rooms").orderBy("created").onSnapshot(async s=>{
+    if(s.empty && me.role==="ogretmen"){ await db.collection("rooms").add({title:"Genel Sınıf",teacherOnly:false,created:Date.now()}); return; }
+    const l=$("list"); l.innerHTML="";
+    if(s.empty){ l.innerHTML='<div class="room">Henüz sohbet yok. Bir öğretmenin oda açmasını bekle.</div>'; return; }
+    s.forEach(d=>{
+      const r=d.data(), el=document.createElement("div"); el.className="room";
+      el.textContent=r.title; 
+      if(r.teacherOnly){ const sm=document.createElement("small"); sm.textContent="📢 Sadece öğretmen yazar"; el.appendChild(sm); }
+      el.onclick=()=>openRoom(d.id,r); l.appendChild(el);
+    });
+  });
+}
+$("newRoom").onclick=async()=>{
+  const title=prompt("Sohbet adı (örn. Matematik 10-A):"); if(!title) return;
+  const t=confirm("Sadece öğretmenler yazabilsin mi (duyuru odası)?\nTamam = evet, İptal = hayır");
+  await db.collection("rooms").add({title,teacherOnly:t,created:Date.now()});
+};
+
+// Sohbet
+function openRoom(id,r){
+  roomId=id; $("rTitle").textContent=r.title;
+  const can = !r.teacherOnly || me.role==="ogretmen";
+  $("bar").classList.toggle("hide",!can);
+  show("chat");
+  if(unsub) unsub();
+  unsub=db.collection("rooms").doc(id).collection("messages").orderBy("ts").limitToLast(200).onSnapshot(s=>{
+    const box=$("msgs"); box.innerHTML="";
+    s.forEach(d=>{
+      const m=d.data(), el=document.createElement("div"); el.className="m"+(m.uid===me.uid?" me":"");
+      if(m.uid!==me.uid){ const b=document.createElement("b"); b.textContent=m.name+(m.role==="ogretmen"?" 👨‍🏫":""); el.appendChild(b); }
+      if(m.img){ const im=document.createElement("img"); im.src=m.img; el.appendChild(im); }
+      if(m.text){ const t=document.createElement("span"); t.textContent=m.text; el.appendChild(t); }
+      const tm=document.createElement("i"); tm.textContent=new Date(m.ts).toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit"}); el.appendChild(tm);
+      box.appendChild(el);
+    });
+    box.scrollTop=box.scrollHeight;
+  });
+}
+$("back").onclick=()=>{ if(unsub)unsub(); show("home"); };
+
+function sendMsg(data){
+  return db.collection("rooms").doc(roomId).collection("messages").add({uid:me.uid,name:me.name,role:me.role,ts:Date.now(),...data});
+}
+$("send").onclick=async()=>{ const t=$("txt").value.trim(); if(!t)return; $("txt").value=""; await sendMsg({text:t}); };
+$("txt").onkeydown=e=>{ if(e.key==="Enter") $("send").click(); };
+
+// Fotoğraf: küçült + JPEG'e çevir, doğrudan mesaja göm
+$("pic").onclick=()=>$("file").click();
+$("file").onchange=e=>{
+  const f=e.target.files[0]; if(!f)return; e.target.value="";
+  const img=new Image(), url=URL.createObjectURL(f);
+  img.onload=async()=>{
+    const s=Math.min(1,900/Math.max(img.width,img.height));
+    const c=document.createElement("canvas"); c.width=img.width*s; c.height=img.height*s;
+    c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+    URL.revokeObjectURL(url);
+    let q=0.65, data=c.toDataURL("image/jpeg",q);
+    while(data.length>900000 && q>0.2){ q-=0.15; data=c.toDataURL("image/jpeg",q); }
+    if(data.length>900000){ alert("Fotoğraf çok büyük."); return; }
+    await sendMsg({img:data});
+  };
+  img.src=url;
+};
+show("auth");
+</script>
+</body>
+</html>
